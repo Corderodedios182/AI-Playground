@@ -1,0 +1,423 @@
+# Usage from command line:
+#   aws cloudformation create-stack --stack-name bedrock-workshop --capabilities CAPABILITY_NAMED_IAM --template-body file://cf.yml --region <<YOUR-REGION>> 
+#   aws cloudformation update-stack --stack-name bedrock-workshop --capabilities CAPABILITY_NAMED_IAM --template-body file://cf.yml --region <<YOUR-REGION>> 
+#   aws cloudformation delete-stack --stack-name bedrock-workshop --region <<YOUR-REGION>> 
+
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+### S3 Bucket
+  AmazonBedrockWorkshopStackS3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties: 
+      BucketName: !Sub 
+        - bedrock-workshop-${postfix}
+        - postfix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+### VPC with two public subnets and 2 private subnets
+  BedrockWorkshopVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true     
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: 10.0.3.0/24
+      MapPublicIpOnLaunch: false
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+      AvailabilityZone: !Sub ${AWS::Region}b
+      CidrBlock: 10.0.4.0/24
+      MapPublicIpOnLaunch: false
+     
+### Internet Gateway and public subnet routing
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway  
+  GatewayToInternet:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+     
+### Security group
+  BedrockWorkshopSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: BedrockWorkshopSecurityGroup
+      GroupDescription: Self-referencing security group for Bedrock workshop
+      VpcId: !Ref BedrockWorkshopVPC
+  SecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BedrockWorkshopSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId: !Ref BedrockWorkshopSecurityGroup
+  SecurityGroupEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BedrockWorkshopSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      CidrIp: 0.0.0.0/0
+
+### NAT Gateway and private subnet routing
+  NatPublicIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      SubnetId: !Ref PublicSubnet1
+      AllocationId: !GetAtt NatPublicIP.AllocationId     
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BedrockWorkshopVPC
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      NatGatewayId: !Ref NatGateway
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable   
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+### VPC interface endpoint to bedrocm-runtime
+  BedrockInterfaceEndpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      VpcEndpointType: 'Interface'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-runtime'
+      VpcId: !Ref BedrockWorkshopVPC
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref BedrockWorkshopSecurityGroup
+
+### RDS PostgreSQL instance
+  AmazonBedrockWorkshopDBSubnet:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: Bedrock-Workshop
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+  AmazonBedrockWorkshopRDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBName: demo
+      Engine: postgres
+      EngineVersion: 15.4
+      AllocatedStorage: 20
+      MasterUsername: postgres
+      MasterUserPassword: !Select [2, !Split ["/", !Ref AWS::StackId ]]
+      DBInstanceClass: db.t3.micro
+      DBSubnetGroupName: !Ref AmazonBedrockWorkshopDBSubnet
+      VPCSecurityGroups: 
+        - !GetAtt BedrockWorkshopSecurityGroup.GroupId
+
+### Amazon Secrets Manager
+  AmazonBedrockWorkshopSecrets:
+    Type: 'AWS::SecretsManager::Secret'
+    DependsOn: AmazonBedrockWorkshopRDSInstance
+    Properties:
+      Name: !Sub 
+        - bedrock-workshop-${postfix}
+        - postfix: !Select [0, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]
+      SecretString: !Sub 
+        - '{"db_hostname": "${AmazonBedrockWorkshopRDSInstance.Endpoint.Address}", "db_hostport": "5432", "db_username": "postgres", "db_password": "${password}", "db_database": "demo", "pinecone_key": "Replace this with your actual API key."}'
+        - password: !Select [2, !Split ["/", !Ref AWS::StackId ]]
+
+### IAM Roles for SageMaker
+  AmazonBedrockWorkshopStackSageMakerRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: AmazonBedrockWorkshopStackSageMakerRole
+      Description: "IAM role for SageMaker Studio."
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "sagemaker.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: AmazonBedrockWorkshopStackSageMakerRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                  - 'bedrock:ListFoundationModels'
+                  - 'lambda:UpdateFunctionCode'
+                  - 'lambda:UpdateFunctionConfiguration'
+                  - 'secretsmanager:GetSecretValue'
+                  - 'aoss:APIAccessAll'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                - !Sub "arn:aws:s3:::${AmazonBedrockWorkshopStackS3Bucket}"
+                - !Sub "arn:aws:s3:::${AmazonBedrockWorkshopStackS3Bucket}/*"
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonSageMakerFullAccess'
+
+### IAM Roles for Lambda Function
+  AmazonBedrockWorkshopStackLambdaFunctionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: AmazonBedrockWorkshopStackLambdaFunctionRole
+      Description: "IAM role for Lambda function."
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      MaxSessionDuration: 3600
+      Policies:
+        - PolicyName: AmazonBedrockWorkshopStackLambdaFunctionPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                  - 'bedrock:ListFoundationModels'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'aoss:APIAccessAll'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DescribeNetworkInterfaces'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+### OpenSearch Serverless Collection
+  WorkshopVpcEndpoint:
+    Type: 'AWS::OpenSearchServerless::VpcEndpoint'
+    Properties:
+      Name: workshop-vpc-endpoint
+      VpcId: !Ref BedrockWorkshopVPC
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !GetAtt BedrockWorkshopSecurityGroup.GroupId
+  WorkshopCollectionAccessPolicy:
+    Type: 'AWS::OpenSearchServerless::AccessPolicy'
+    Properties:
+      Name: workshop-access-policy
+      Type: data
+      Description: Access policy
+      Policy: !Sub >-
+        [{"Description":"Access for worshop roles","Rules":[{"ResourceType":"index","Resource":["index/*/*"],"Permission":["aoss:*"]},
+        {"ResourceType":"collection","Resource":["collection/*"],"Permission":["aoss:*"]}],
+        "Principal":["arn:aws:iam::${AWS::AccountId}:role/AmazonBedrockWorkshopStackSageMakerRole", "arn:aws:iam::${AWS::AccountId}:role/AmazonBedrockWorkshopStackLambdaFunctionRole"]}]
+  WorkshopNetworkPolicy:
+    Type: 'AWS::OpenSearchServerless::SecurityPolicy'
+    Properties:
+      Name: workshop-network-policy
+      Type: network
+      Description: Network policy
+      Policy: !Sub >-
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/*"]}, {"ResourceType":"dashboard","Resource":["collection/*"]}],"AllowFromPublic":false, "SourceVPCEs": ["${WorkshopVpcEndpoint.Id}"]}]      
+  WorkshopEncryptionPolicy:
+    Type: 'AWS::OpenSearchServerless::SecurityPolicy'
+    Properties:
+      Name: workshop-encryption-policy
+      Type: encryption
+      Description: Encryption policy
+      Policy: >-
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/*"]}],"AWSOwnedKey":true}
+  AmazonBedrockWorkshopStackOpenSearchServerlessCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DeletionPolicy: Delete
+    Properties: 
+      Name: bedrock-workshop-collection
+      Type: VECTORSEARCH
+    DependsOn: WorkshopEncryptionPolicy
+
+### SageMaker Domain and user profile
+  AmazonBedrockWorkshopStackSageMakerDomain:
+    Type: AWS::SageMaker::Domain
+    Properties: 
+      AppNetworkAccessType: VpcOnly
+      AuthMode: IAM
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt AmazonBedrockWorkshopStackSageMakerRole.Arn
+        SecurityGroups:
+          - !GetAtt BedrockWorkshopSecurityGroup.GroupId
+      DomainName: BedrockWorkshop
+      VpcId: !Ref BedrockWorkshopVPC
+      SubnetIds: 
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      DefaultSpaceSettings:
+        ExecutionRole: !GetAtt AmazonBedrockWorkshopStackSageMakerRole.Arn
+        SecurityGroups: 
+          - !Ref BedrockWorkshopSecurityGroup
+  AmazonBedrockWorkshopStackSageMakerUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties: 
+      DomainId: !Ref AmazonBedrockWorkshopStackSageMakerDomain
+      UserProfileName: BedrockWorkshop
+  AmazonBedrockWorkshopStackSageMakerSpace:
+    Type: AWS::SageMaker::Space
+    Properties:
+      DomainId: !Ref AmazonBedrockWorkshopStackSageMakerDomain
+      SpaceName: BedrockWorkshopSpace
+      SpaceSettings: 
+        AppType: JupyterLab
+        SpaceStorageSettings: 
+          EbsStorageSettings: 
+            EbsVolumeSizeInGb: 5
+
+### Lambda Function
+  AmazonBedrockWorkshopStackLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: BedrockWorkshopChatbot
+      Runtime: python3.11
+      MemorySize: 128
+      Role: !GetAtt AmazonBedrockWorkshopStackLambdaFunctionRole.Arn
+      Handler: index.lambda_handler
+      Timeout: 15
+      Environment: 
+        Variables:
+          aossHost: !GetAtt AmazonBedrockWorkshopStackOpenSearchServerlessCollection.CollectionEndpoint
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+            # TODO implement
+            return {
+              'statusCode': 200,
+              'headers': {'Content-Type': 'text/html'},
+              'body': json.dumps('Hello from Lambda!')
+            } 
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt BedrockWorkshopSecurityGroup.GroupId
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+
+### API Gateway
+  AmazonBedrockWorkshopStackAPIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: BedrockWorkshopChatbot
+  AmazonBedrockWorkshopStackAPIGatewayRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: ANY
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt AmazonBedrockWorkshopStackLambdaFunction.Arn
+      ResourceId: !GetAtt AmazonBedrockWorkshopStackAPIGateway.RootResourceId
+      RestApiId: !Ref AmazonBedrockWorkshopStackAPIGateway
+  LambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt AmazonBedrockWorkshopStackLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:*
+  AmazonBedrockWorkshopStackAPIGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AmazonBedrockWorkshopStackAPIGatewayRootMethod
+    Properties:
+      RestApiId: !Ref AmazonBedrockWorkshopStackAPIGateway
+      StageName: demo

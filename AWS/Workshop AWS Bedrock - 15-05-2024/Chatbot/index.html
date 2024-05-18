@@ -1,0 +1,76 @@
+<HTML>
+    <HEAD>
+        <META http-equiv='Content-Type' content='text/html; charset=UTF-8'>
+        <TITLE>Amazon Bedrock Development Tutorial</TITLE>
+    </HEAD>
+    <BODY>
+        <textarea id="chat_history" name="chat_history" rows="40" cols="120" disabled></textarea>
+        <P>Enter your message below:</P>
+        <textarea id="chat_entry" name="chat_entry" rows="3" cols="100"></textarea>
+        <button type="button" onclick="add()">&nbsp;&nbsp;Send&nbsp;&nbsp;</button> 
+    </BODY>
+<HTML>
+
+<script>
+var chat_depth   = 20;
+var chat_history = [];
+var chat_updated = false;
+var conn_ongoing = false;
+setInterval(doChat, 2000);
+
+function add() {
+    // Get chat entry
+    const entry = document.getElementById("chat_entry").value.trim();
+    // Make sure that it is not empty
+    if (entry !== "") {
+        // This is an entry from human
+        const msg = "Human: " + entry;
+        // Add this to the chat history array
+        chat_history.push(msg);
+        chat_updated = true;
+        // Add this to the chat history pane
+        document.getElementById("chat_history").value += msg + "\n";
+    }
+    // Clear out the chat entry
+    document.getElementById("chat_entry").value = "";
+}
+
+function doChat() {
+    // Only connect to the chatbot when there is an update by the user.
+    if (chat_updated) {
+        // Only connect to the chatbot when there is no ongoing connection.
+        if (!conn_ongoing) {
+            // Only work on the last N messages in the chat history
+            var start = 0;
+            if (chat_history.length > chat_depth) {
+                start = chat_history.length - chat_depth;
+            }
+            var messages = "";
+            for (let i = start; i < chat_history.length; i++) {
+                messages += chat_history[i] + "\n";
+            }
+            
+            // Connect to the chatbot
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/demo', true);
+            xhr.onload = function () {
+                // Extract the chatbot response
+                var msg = this.responseText.trim()
+                if (!msg.startsWith("Assistant: ")) {
+                    msg = "Assistant: " + this.responseText;
+                }
+                // Add this to the chat history array
+                chat_history.push(msg);
+                // Add this to the chat history pane
+                document.getElementById("chat_history").value += msg + "\n";
+                // Set the conn_ongoing flag to false
+                conn_ongoing = false;
+            };
+            // Set the chat_updated off and conn_ongoing flags on and send the request.
+            chat_updated = false;
+            conn_ongoing = true;
+            xhr.send(messages);
+        }
+    }
+} 
+</script>
