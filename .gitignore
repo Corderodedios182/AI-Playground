@@ -16,6 +16,7 @@ secrets.json
 # 📁 Archivos de Bases de Datos
 *.sqlite3
 *.db
+*.csv
 
 # 📁 Archivos de Salida y Logs
 *.log
