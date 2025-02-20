@@ -1,0 +1,39 @@
+# 📁 Entornos Virtuales
+venv/
+.env/
+.venv/
+
+# 🐍 Archivos Python
+__pycache__/
+*.py[cod]
+
+# 🔑 Archivos Sensibles
+*.env
+*.pem
+*.key
+secrets.json
+
+# 📁 Archivos de Bases de Datos
+*.sqlite3
+*.db
+
+# 📁 Archivos de Salida y Logs
+*.log
+*.out
+*.tmp
+
+# 📁 IDEs y Editores
+.vscode/
+.idea/
+
+# 📁 Sistema Operativo
+.DS_Store
+Thumbs.db
+
+# 📁 Jupyter Notebooks
+.ipynb_checkpoints/
+
+# 📁 Pruebas y Cobertura
+.pytest_cache/
+.coverage
+htmlcov/
