@@ -4,75 +4,46 @@ Created on Thu Feb 20 12:26:17 2025
 
 @author: corde
 """
-import os
-from langchain.utilities import SQLDatabase
-from langchain.llms import OpenAI
-from langchain_experimental.sql import SQLDatabaseChain
-from langchain.prompts import PromptTemplate
-from langchain.prompts.chat import HumanMessagePromptTemplate
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+import ollama
 
-# Configura la API
-
-OPENAI_API_KEY = os.getenv("OpenIA")
-
-llm = ChatOpenAI(temperatura= 0 , openai_api_key=OPENAI_API_KEY)
-
-host = 'localhost'
-port = '3306'
-username = 'root'
-password = 'password'
-database_schema = 'agency_db'
-mysql_uri = f"mysql+pymysql://{username}:{password}@{host}:{port}/{database_schema}"
-
-#include_tables : solo hacemos referencia a la tabla job_details y realizamos consultas únicamente sobre esta tabla
-#sample_rows_in_table_info : al interactuar con la base de datos, langchain recibirá las 2 primeras filas de esta tabla como muestra para un contexto adicional y una mejor recuperación
-db = SQLDatabase.from_uri(mysql_uri, include_tables=['job_details'],sample_rows_in_table_info=2)
-db_chain = SQLDatabaseChain.from_llm(llm, db, verbose=True)
-
-def retrieve_from_db(query: str) -> str:
-    db_context = db_chain(query)
-    db_context = db_context['result'].strip()
-    return db_context
-
-#
-def generate(query: str) -> str:
-    db_context = retrieve_from_db(query)
+def generate_query_with_ollama(question):
+    system_prompt = """
+    You are a data analysis assistant. You will receive a question about a Bitcoin dataset.
+    Generate a valid Python Pandas query to analyze the data. The dataset has the following columns:
+    - Date (string, format: MM/DD/YYYY)
+    - Price (float, closing price of Bitcoin)
+    - Open (float, opening price)
+    - High (float, highest price of the day)
+    - Low (float, lowest price of the day)
+    - Vol. (float, trading volume)
+    - Change % (float, percentage change)
     
-    system_message = """You are a professional representative of an employment agency.
-        You have to answer user's queries and provide relevant information to help in their job search. 
-        Example:
-        
-        Input:
-        Where are the most number of jobs for an English Teacher in Canada?
-        
-        Context:
-        The most number of jobs for an English Teacher in Canada is in the following cities:
-        1. Ontario
-        2. British Columbia
-        
-        Output:
-        The most number of jobs for an English Teacher in Canada is in Toronto and British Columbia
-        """
+    Example Questions and Queries:
+    - "What was the highest Bitcoin price in 2024?" → df.loc[df["High"].idxmax()]
+    - "What is the average Bitcoin price?" → df["Price"].mean()
+    - "What was the total trading volume?" → df["Vol."].sum()
     
-    human_qry_template = HumanMessagePromptTemplate.from_template(
-        """Input:
-        {human_input}
-        
-        Context:
-        {db_context}
-        
-        Output:
-        """
+    Generate only the Pandas query, without explanations.
+    """
+    
+    response = ollama.chat(
+        model="mistral",  
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ]
     )
-    messages = [
-      SystemMessage(content=system_message),
-      human_qry_template.format(human_input=query, db_context=db_context)
-    ]
-    response = llm(messages).content
-    return response
+    
+    query = response["message"]["content"].strip()
+    return query
 
-generate("")
+question_test = "What was the highest Bitcoin price recorded in 2024?"
 
+generated_query = generate_query_with_ollama(question_test)
 
+try:
+    result_ollama = eval(generated_query)
+except Exception as e:
+    result_ollama = f"Error executing query: {e}"
+
+result_ollama
