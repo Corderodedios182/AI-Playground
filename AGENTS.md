@@ -40,3 +40,7 @@ All other projects have no test/lint/typecheck setup.
 - `RAG_Demo_Architectures/Talk_to_your_database...py` uses `eval()` on generated Pandas code (insecure with untrusted models)
 - Several projects have placeholder code (`pass` bodies) waiting to be filled in
 - `fastapi-docker` fetches Iris dataset live from GitHub Gist on every request (no caching)
+
+
+### Tools
+When you need to search docs, use 'context7' tools.
